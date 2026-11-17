@@ -33,6 +33,20 @@
   bedienen und gerade fahren. Erst 3 Vorschläge, „Weitere Optionen“, zuletzt Abfahrtsliste/Zugnummer.
   Der Halt „Fahrkarte bis“ wird zum geplanten Ausstieg.
 
+## Stufe 1e (erledigt)
+- „Jetzt“ neu: Kopfkarte mit Wegpunkten (Zug → Weg zum Ziel → Ziel), Zug antippbar (Live-Position, nächste Halte,
+  Ausstiegsgleis, Sitzplatz Wagen/Platz/Abschnitt); darunter Umschalter „Weg zum Ziel | Verbindung“; Vergangenes
+  und Nebensächliches ausgeblendet (Feedback-Frage nicht während der Fahrt, Ausstiegswahl nur bei Empfehlung)
+- Uber/Bolt/FREENOW/Taxi direkt bestellen (Abholung = Standort, Ziel vorausgefüllt); nach der Fahrt Beleg-Abfrage
+  mit Kamera, Beleg landet als „Taxi / Uber“ bei der Reise
+
+## Ideen aus dem Test (noch offen)
+- Wagenreihung/Gleisabschnitt automatisch (sobald eine offene Datenquelle verfügbar ist)
+- Nachts automatisch Taxi/Uber empfehlen, wenn ÖPNV-Rest > 2× so lang
+- „Zum Ausgang“-Hinweis am Zielbahnhof (welcher Ausgang Richtung Ziel)
+- Akku-Sparmodus (seltener abgleichen, wenn Akku < 20 %)
+- Offline-Notfallkarte: Verbindung + Hoteladresse als Bild speichern
+
 ## Stufe 2 (vorgemerkt – braucht native App bzw. Server)
 - [ ] **Live-Aktivität auf dem Sperrbildschirm & Dynamic Island** (ActivityKit) – Assistenz dauerhaft in der Leiste oben
 - [ ] **Push bei gesperrtem iPhone**: kleiner Server überwacht die Reise und schickt Web-Push/APNs

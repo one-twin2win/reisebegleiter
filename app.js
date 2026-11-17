@@ -580,8 +580,10 @@ async function lastMile(fromPlace, ev, time) {
   const taxi = 4.3 + Math.min(carKm, 7) * 2.8 + Math.max(0, carKm - 7) * 2.1 + carSec / 60 * 0.15;
   return { transit, walk, bike, car: { duration: carSec, km: carKm, traffic: ok(here) ? Math.round((ok(here).duration - ok(here).base) / 60) : null }, taxi, dist, from: fromPlace };
 }
-function uberLink(ev) {
-  return `https://m.uber.com/ul/?${qs({ action: 'setPickup', pickup: 'my_location', 'dropoff[latitude]': ev.place.lat, 'dropoff[longitude]': ev.place.lon, 'dropoff[nickname]': ev.place.name || ev.title, 'dropoff[formatted_address]': ev.place.address || '' })}`;
+function uberLink(ev, pos) {
+  // Abholung: aktueller GPS-Standort (falls bekannt), sonst „mein Standort“ in der Uber-App; Ziel vorausgefüllt
+  const pickup = pos ? { 'pickup[latitude]': pos.lat, 'pickup[longitude]': pos.lon, 'pickup[nickname]': pos.name || 'Mein Standort' } : { pickup: 'my_location' };
+  return `https://m.uber.com/ul/?${qs({ action: 'setPickup', ...pickup, 'dropoff[latitude]': ev.place.lat, 'dropoff[longitude]': ev.place.lon, 'dropoff[nickname]': ev.place.name || ev.title, 'dropoff[formatted_address]': ev.place.address || '' })}`;
 }
 const appleMaps = (ev, flg) => `https://maps.apple.com/?${qs({ daddr: `${ev.place.lat},${ev.place.lon}`, dirflg: flg })}`;
 const googleMaps = (ev, mode) => `https://www.google.com/maps/dir/?${qs({ api: 1, destination: `${ev.place.lat},${ev.place.lon}`, travelmode: mode })}`;
@@ -649,7 +651,7 @@ function itinSummary(it) {
 async function renderJetzt() {
   const el = $('#view-jetzt');
   const A = S.active, ev = A ? activeEvent() : nextEvent();
-  let h = feedbackPromptCard();
+  let h = A ? '' : feedbackPromptCard(); // während der Fahrt nichts Unwichtiges oben
   if (!S.events.length) {
     h += `<div class="empty"><div class="ico">🧭</div><h3>Wohin geht's?</h3><p>Trag dein Ziel ein oder übernimm es aus einer E-Mail, einem Kalender oder einem Screenshot.</p><button class="btn primary" onclick="openAdd()">Ziel eintragen</button></div>`;
     el.innerHTML = h; return;
@@ -675,26 +677,43 @@ async function renderJetzt() {
     <div class="spread"><div class="eyebrow">Ankunft am Ziel</div><button class="btn sm" onclick="refreshActive(true)">↻</button></div>
     <div class="dest">${KIND[ev.kind]?.ico || '📍'} ${esc(ev.title)}</div>
     <div class="row" style="margin-top:8px;align-items:flex-end"><div class="big">${fmtT(eta)}</div>${late ? `<span class="delta">${late > 0 ? '+' : ''}${late} Min</span>` : (trainDelay > 0 ? `<span class="delta">Zug +${trainDelay}</span>` : '<span class="delta">im Plan</span>')}</div>
-    <div class="sub" style="margin-top:8px">${cur ? `Jetzt: ${modeIcon(cur.mode)} ${isTransit(cur) ? esc(legName(cur)) + ' → ' + esc(cur.to.name) + ' (an ' + fmtT(cur.endTime) + ')' : 'unterwegs zu ' + esc(cur.to.name === 'END' ? ev.title : cur.to.name)}` : nextT ? `Als Nächstes: ${esc(legName(nextT))} um ${fmtT(nextT.startTime)}${nextT.from.track ? ', Gl. ' + esc(nextT.from.track) : ''} ab ${esc(nextT.from.name)}` : 'Gleich geschafft'}</div>
+    ${waypointsHtml(A, ev, now)}
     <div class="progress"><i style="width:${prog}%"></i></div>
-    <div class="row wrap" style="margin-top:14px"><button class="btn" onclick="replan()">⟲ Neu planen</button><button class="btn" onclick="openRideSetup('${ev.id}')">🔀 Zug wechseln</button><button class="btn" onclick="toggleMap()">🗺️ Karte</button></div>
+    <div class="row" style="margin-top:12px;gap:6px"><button class="btn sm" onclick="replan()">⟲ Neu planen</button><button class="btn sm" onclick="openRideSetup('${ev.id}')">🔀 Zug</button><button class="btn sm" onclick="toggleMap()">🗺️ Karte</button><button class="btn sm" onclick="openTripMenu()">⋯</button></div>
   </div>`;
   if (A.alternative) {
     const f = A.alternative.legs.filter(isTransit).find(l => new Date(l.startTime) > Date.now());
     h += `<div class="card" style="border:2px solid var(--bad)"><b>⚠️ Dein Plan trägt nicht mehr</b><div class="small" style="margin-top:4px">Neue Verbindung: ${f ? `${esc(legName(f))} um ${fmtT(f.startTime)}${f.from.track ? ', Gl. ' + esc(f.from.track) : ''} ab ${esc(f.from.name)}` : ''} → Ziel ${fmtT(A.alternative.endTime)}</div><div class="row" style="margin-top:10px"><button class="btn primary" onclick="adoptAlt()">Übernehmen</button><button class="btn" onclick="replan()">Andere Optionen</button></div></div>`;
   }
-  if (A.ride && A.rideOptions?.length > 1) {
+  if (A.ride && A.rideOptions?.length > 1 && A.ride.recommendExit) { // nur zeigen, wenn wirklich ein anderer Ausstieg empfohlen wird
     h += `<div class="card"><h3>Wo aussteigen?</h3><div class="small muted">Ich prüfe laufend auch den vorletzten und vorvorletzten Halt. Einen Wechsel empfehle ich nur bei einer gravierenden Störung (ab ${S.settings.interveneDelay} Min) und wenn der andere Weg sicher besser ist.</div><div class="list" style="margin-top:10px">${A.rideOptions.map(o => `<div class="item" onclick="setExit('${o.exit.stopId}')" style="${o.exit.stopId === A.ride.recommendExit ? 'outline:2px solid var(--bad)' : ''}"><div class="ic">${o.exit.stopId === A.ride.suggestedExit ? '📍' : o.exit.stopId === A.ride.recommendExit ? '⚠️' : '🚉'}</div><div class="grow"><b>${esc(o.exit.name)}</b><div class="small muted">an ${fmtT(o.exit.arrival)}${delayOf(o.exit.arrival, o.exit.scheduledArrival) > 0 ? ' (+' + delayOf(o.exit.arrival, o.exit.scheduledArrival) + ')' : ''} · ${o.transfers ?? '?'} Umst. danach${o.exit.stopId === A.ride.suggestedExit ? ' · <b>dein Plan</b>' : o.exit.stopId === A.ride.recommendExit ? ' · <b style="color:var(--bad)">empfohlen</b>' : ''}</div></div><div class="when">Ziel ${fmtT(o.eta)}</div></div>`).join('')}</div>${A.ride.exitStopId ? '<button class="btn ghost sm" onclick="setExit(null)">Zurück zum ursprünglichen Plan</button>' : ''}</div>`;
   }
   h += `<div id="mapWrap" class="card hidden"><div id="map" class="map"></div></div>`;
-  h += `<div class="card"><div class="spread"><h3>Deine Verbindung</h3><span class="small muted">${A.lastRefresh ? 'Stand ' + fmtT(A.lastRefresh) : ''}</span></div>${renderLegs(it)}</div>`;
-  h += `<div class="card" id="lmCard"><div class="eyebrow">Vom Bahnhof zum Ziel</div><div class="row" style="margin-top:8px"><span class="spinner"></span><span class="muted small">Optionen werden berechnet…</span></div></div>`;
-  h += `<div class="row"><button class="btn block danger" onclick="if(confirm('Begleitung beenden?'))stopCompanion(false)">Begleitung beenden</button><button class="btn block" onclick="stopCompanion(true)">✓ Angekommen</button></div>`;
+  // Umschalter: Weg zum Ziel | Verbindung (Auswahl wird gemerkt)
+  const tab = S.ui?.jetztTab || 'lm';
+  h += `<div class="seg" style="margin-top:4px"><button class="${tab === 'lm' ? 'on' : ''}" onclick="setJetztTab('lm')">🏁 Weg zum Ziel</button><button class="${tab === 'conn' ? 'on' : ''}" onclick="setJetztTab('conn')">🚆 Verbindung</button></div>`;
+  if (tab === 'conn') {
+    // nur noch Relevantes: laufender und kommende Abschnitte; Vergangenes eingeklappt
+    const restIdx = it.legs.findIndex(l => new Date(l.endTime).getTime() > now);
+    const past = restIdx > 0 ? it.legs.slice(0, restIdx).filter(isTransit) : [];
+    const rest = { ...it, legs: restIdx >= 0 ? it.legs.slice(restIdx) : it.legs };
+    h += `<div class="card"><div class="spread"><span class="small muted">${A.lastRefresh ? 'Live-Stand ' + fmtT(A.lastRefresh) : ''}</span>${past.length ? `<span class="small muted">${past.length} Abschnitt(e) erledigt</span>` : ''}</div>${renderLegs(rest)}</div>`;
+  } else {
+    h += `<div class="card" id="lmCard"><div class="eyebrow">Vom Bahnhof zum Ziel</div><div class="row" style="margin-top:8px"><span class="spinner"></span><span class="muted small">Optionen werden berechnet…</span></div></div>`;
+  }
   el.innerHTML = h;
   // Letzte Meile ab dem letzten Bahnhof der Verbindung
-  const lastRail = [...it.legs].reverse().find(l => isTransit(l) && LONG.includes(l.mode)) || [...it.legs].reverse().find(isTransit);
+  const lastRail = lastMainLeg(it);
   if (lastRail) renderLastMile(lastRail.to, ev, lastRail.endTime);
-  else $('#lmCard').remove();
+  else $('#lmCard')?.remove();
+}
+function setJetztTab(t) { S.ui = { ...(S.ui || {}), jetztTab: t }; save(); renderJetzt(); }
+function openTripMenu() {
+  openSheet(`<h2>Reise</h2><div class="list" style="margin-top:10px">
+    <button class="btn block" onclick="closeSheet();stopCompanion(true)">✓ Angekommen</button>
+    <button class="btn block" onclick="closeSheet();openExpense()">🧾 Beleg erfassen</button>
+    <button class="btn block" onclick="closeSheet();go('assist')">✦ Assistenz & Verlauf</button>
+    <button class="btn block danger" onclick="if(confirm('Begleitung beenden?')){closeSheet();stopCompanion(false)}">Begleitung beenden</button></div>`);
 }
 async function previewLastMile(id) {
   const ev = S.events.find(e => e.id === id);
@@ -720,6 +739,13 @@ async function renderLastMile(station, ev, time) {
   const best = [...opts].sort((a, b) => a.sec - b.sec)[0];
   // Empfehlung: Gepäck/Nacht/Wetter könnten später einfließen – derzeit: schnellste sinnvolle Option, Fußweg bevorzugt bis 15 Min
   const rec = (lm.walk && lm.walk.duration < 15 * 60) ? 'walk' : best.k;
+  // Kurzfassung für die Kopfkarte („Weg zum Ziel“)
+  const ro = opts.find(o => o.k === rec);
+  // Zeitersparnis gegenüber dem geplanten Rest der Verbindung nennen (z. B. nachts: Taxi statt langer ÖPNV-Kette)
+  const it0 = S.active?.itinerary, mainL = it0 && lastMainLeg(it0);
+  const planned = mainL ? (new Date(itinEnd(it0)) - new Date(mainL.endTime)) / 1000 : null;
+  const gain = planned != null && ro ? Math.round((planned - ro.sec) / 60) : 0;
+  if (S.active && ro) { S.active.lmSummary = { ico: ro.ico, text: `${ro.l.split(' · ')[0]} · ${ro.v}${gain >= 10 ? ` (${gain} Min schneller)` : ''}` }; const w = $('#wpLast'); if (w) w.textContent = 'Alternative: ' + S.active.lmSummary.text; }
   c.innerHTML = `<div class="spread"><div class="eyebrow">Vom Bahnhof zum Ziel</div><span class="small muted">ab ${esc(station.name)} · ${fmtT(time)}</span></div>
     <div class="tiles" style="margin-top:10px">${opts.map(o => `<button class="tile ${o.k === rec ? 'best' : ''}" onclick="lastMileAction('${o.k}')"><div class="ico">${o.ico}</div><div class="v">${o.v}</div><div class="l">${esc(o.l)}</div>${o.k === rec ? '<div class="small" style="color:var(--accent2);font-weight:700;margin-top:4px">Empfehlung</div>' : ''}</button>`).join('')}</div>
     ${lm.car.traffic != null ? `<div class="meta">🚗 Auto mit Verkehrslage: ${fmtDur(lm.car.duration)}${lm.car.traffic > 2 ? ` (+${lm.car.traffic} Min Stau)` : ' (frei)'}</div>` : `<div class="meta">🚗 Auto ca. ${fmtDur(lm.car.duration)} ohne Verkehrslage <a href="#" onclick="go('mehr');return false">· HERE-Schlüssel für Stau-Info</a></div>`}
@@ -731,6 +757,7 @@ function lastMileAction(k) {
   if (!ev) return;
   const { lm } = window._lm;
   if (k === 'walk') return chooseWalk(ev, lm.from);
+  if (k === 'uber') return chooseRide(ev, lm);
   if (k === 'oepnv' && lm.transit.length) return chooseTransit(ev, lm);
   const links = {
     oepnv: [['Apple Karten (ÖPNV)', appleMaps(ev, 'r')], ['Google Maps (ÖPNV)', googleMaps(ev, 'transit')]],
@@ -1173,7 +1200,7 @@ function renderAssist() {
   const el = $('#view-assist');
   const items = S.feed.slice(-80);
   el.innerHTML = `${'Notification' in window && Notification.permission !== 'granted' ? `<div class="card"><b>🔔 Mitteilungen aktivieren?</b><div class="small muted">Damit ich dich auch bei gesperrtem Bildschirm warnen kann. Auf dem iPhone: zuerst über Teilen → „Zum Home-Bildschirm“ installieren.</div><button class="btn primary sm" style="margin-top:8px" onclick="askNotifyPermission()">Erlauben</button></div>` : ''}
-    <div id="feedList">${items.length ? items.map(m => `<div class="msg ${m.from === 'me' ? 'me' : ''} ${m.level === 'warn' ? 'warn' : m.level === 'bad' ? 'bad' : m.level === 'ok' ? 'ok' : ''}"><div class="av">${m.from === 'me' ? '🙂' : '✦'}</div><div class="bubble">${m.title ? `<div class="tt">${esc(m.title)}</div>` : ''}<div style="white-space:pre-wrap">${esc(m.body || '')}</div>${m.action === 'replan' && S.active ? '<button class="btn sm primary" style="margin-top:8px" onclick="go(\'jetzt\');replan()">Neu planen</button>' : ''}${m.action === 'adoptAlt' && S.active?.alternative ? '<button class="btn sm primary" style="margin-top:8px" onclick="adoptAlt()">Alternative übernehmen</button>' : ''}${m.action === 'takeExit' && S.active?.ride?.recommendExit === m.exitId ? `<button class="btn sm primary" style="margin-top:8px" onclick="setExit('${m.exitId}')">Ausstieg übernehmen</button>` : ''}${m.action === 'startPlan' && !S.active && S.events.some(e => e.id === m.evId) ? `<button class="btn sm primary" style="margin-top:8px" onclick="startFromPlan('${m.evId}')">Begleitung starten</button>` : ''}${m.action === 'preplan' && S.events.some(e => e.id === m.evId) ? `<button class="btn sm primary" style="margin-top:8px" onclick="openPrePlan('${m.evId}')">Neu planen</button>` : ''}${m.action === 'archive' && S.events.some(e => e.id === m.evId) ? `<button class="btn sm primary" style="margin-top:8px" onclick="askArchive('${m.evId}')">Archivieren</button>` : ''}${m.action === 'addReceipt' ? '<button class="btn sm primary" style="margin-top:8px" onclick="openExpense()">Beleg erfassen</button>' : ''}${m.action === 'switchTrain' && S.active ? `<button class="btn sm primary" style="margin-top:8px" onclick="openRideSetup('${S.active.eventId}')">Zug wechseln</button>` : ''}${m.chips ? `<div class="chips" style="margin-top:8px">${m.chips.map(c => `<button class="chip" onclick="feedbackChip('${esc(c)}')">${esc(c)}</button>`).join('')}</div>` : ''}<div class="time">${fmtT(m.t)}</div></div></div>`).join('') : '<div class="empty"><div class="ico">✦</div>Hier erscheinen meine Hinweise zu deiner Reise. Du kannst mich auch etwas fragen.</div>'}</div>
+    <div id="feedList">${items.length ? items.map(m => `<div class="msg ${m.from === 'me' ? 'me' : ''} ${m.level === 'warn' ? 'warn' : m.level === 'bad' ? 'bad' : m.level === 'ok' ? 'ok' : ''}"><div class="av">${m.from === 'me' ? '🙂' : '✦'}</div><div class="bubble">${m.title ? `<div class="tt">${esc(m.title)}</div>` : ''}<div style="white-space:pre-wrap">${esc(m.body || '')}</div>${m.action === 'replan' && S.active ? '<button class="btn sm primary" style="margin-top:8px" onclick="go(\'jetzt\');replan()">Neu planen</button>' : ''}${m.action === 'adoptAlt' && S.active?.alternative ? '<button class="btn sm primary" style="margin-top:8px" onclick="adoptAlt()">Alternative übernehmen</button>' : ''}${m.action === 'takeExit' && S.active?.ride?.recommendExit === m.exitId ? `<button class="btn sm primary" style="margin-top:8px" onclick="setExit('${m.exitId}')">Ausstieg übernehmen</button>` : ''}${m.action === 'startPlan' && !S.active && S.events.some(e => e.id === m.evId) ? `<button class="btn sm primary" style="margin-top:8px" onclick="startFromPlan('${m.evId}')">Begleitung starten</button>` : ''}${m.action === 'preplan' && S.events.some(e => e.id === m.evId) ? `<button class="btn sm primary" style="margin-top:8px" onclick="openPrePlan('${m.evId}')">Neu planen</button>` : ''}${m.action === 'archive' && S.events.some(e => e.id === m.evId) ? `<button class="btn sm primary" style="margin-top:8px" onclick="askArchive('${m.evId}')">Archivieren</button>` : ''}${m.action === 'rideReceipt' && S.pendingRide ? '<button class="btn sm primary" style="margin-top:8px" onclick="rideReceipt()">📷 Beleg erfassen</button>' : ''}${m.action === 'addReceipt' ? '<button class="btn sm primary" style="margin-top:8px" onclick="openExpense()">Beleg erfassen</button>' : ''}${m.action === 'switchTrain' && S.active ? `<button class="btn sm primary" style="margin-top:8px" onclick="openRideSetup('${S.active.eventId}')">Zug wechseln</button>` : ''}${m.chips ? `<div class="chips" style="margin-top:8px">${m.chips.map(c => `<button class="chip" onclick="feedbackChip('${esc(c)}')">${esc(c)}</button>`).join('')}</div>` : ''}<div class="time">${fmtT(m.t)}</div></div></div>`).join('') : '<div class="empty"><div class="ico">✦</div>Hier erscheinen meine Hinweise zu deiner Reise. Du kannst mich auch etwas fragen.</div>'}</div>
     <div class="chips" style="margin-top:12px">${['Wann komme ich an?', 'Wie komme ich zum Hotel?', 'Gibt es Verspätungen?', 'Nachricht: ich verspäte mich'].map(q => `<button class="chip" onclick="ask('${q}')">${q}</button>`).join('')}</div>
     <form class="composer" onsubmit="event.preventDefault();ask(this.q.value);this.q.value=''"><input name="q" placeholder="Frag mich etwas…" autocomplete="off"><button class="btn primary sm">Senden</button></form>`;
   setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 50);
