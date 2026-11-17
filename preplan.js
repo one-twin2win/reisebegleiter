@@ -6,16 +6,19 @@
 
 S.recentOrigins ||= [];
 
-function openPrePlan(evId) {
+function openPrePlan(evId, preset = null) {
   const ev = S.events.find(e => e.id === evId); if (!ev) return;
-  const p = ev.plan || {};
-  const def = p.time ? new Date(p.time) : ev.start ? new Date(new Date(ev.start).getTime() - 15 * 60e3) : new Date(Date.now() + 3600e3);
+  const p = preset || ev.plan || {};
+  // „spätestens dort“ = exakt diese Zeit; sonst 15 Min Puffer vor Beginn
+  const def = p.time ? new Date(p.time) : ev.arriveBy ? new Date(ev.arriveBy) : ev.start ? new Date(new Date(ev.start).getTime() - 15 * 60e3) : new Date(Date.now() + 3600e3);
+  const anchor = S.events.find(e => e.id === ev.after);
   const origins = [
+    ...(anchor ? [{ k: 'anc', label: `${KIND[anchor.kind]?.ico || '📍'} ${anchor.place.name || anchor.title}`, place: { ...anchor.place, name: anchor.place.name || anchor.title } }] : []),
     { k: 'gps', label: '📍 Mein Standort' },
     ...(S.settings.home ? [{ k: 'home', label: `🏠 ${S.settings.home.name}`, place: S.settings.home }] : []),
     ...S.recentOrigins.filter(o => !S.settings.home || o.name !== S.settings.home.name).slice(0, 3).map((o, i) => ({ k: 'r' + i, label: '🕘 ' + o.name, place: o }))
   ];
-  let origin = p.origin || null, mode = p.mode || (ev.start ? 'arr' : 'dep');
+  let origin = p.origin || (anchor ? origins[0].place : null), mode = p.mode || (ev.start ? 'arr' : 'dep');
   const selKey = origin ? (origins.find(o => o.place && o.place.name === origin.name)?.k || 'custom') : 'gps';
   openSheet(`<h2>🧭 Anreise planen</h2>
     <div class="muted small">${KIND[ev.kind]?.ico || '📍'} ${esc(ev.title)}${ev.start ? ' · ' + fmtD(ev.start) + ', ' + fmtT(ev.start) : ''}</div>
@@ -26,7 +29,8 @@ function openPrePlan(evId) {
     <label class="f">Wann?</label>
     <div class="seg" id="ppM"><button data-m="arr" class="${mode === 'arr' ? 'on' : ''}">Ankommen bis</button><button data-m="dep" class="${mode === 'dep' ? 'on' : ''}">Losfahren um</button></div>
     <input class="input" type="datetime-local" id="ppT" style="margin-top:8px" value="${localInputValue(def)}">
-    ${ev.start ? `<div class="small muted" style="margin-top:4px">Vorschlag: 15 Min vor Beginn – bei Bedarf ändern.</div>` : ''}
+    ${ev.arriveBy ? `<div class="small muted" style="margin-top:4px">Du musst spätestens um ${fmtT(ev.arriveBy)} dort sein – ich zeige nur Verbindungen, die das sicher schaffen.</div>` : ev.start ? `<div class="small muted" style="margin-top:4px">Vorschlag: 15 Min vor Beginn – bei Bedarf ändern.</div>` : ''}
+    ${anchor ? `<div class="small" style="margin-top:4px">🧳 Etappe deiner Reise – Start ist „${esc(anchor.place.name || anchor.title)}“, jederzeit änderbar.</div>` : ''}
     <button class="btn primary block" style="margin-top:14px" id="ppGo">Verbindungen suchen</button>
     <div id="ppR"></div>`);
   $$('#ppO .chip').forEach(b => b.onclick = () => {
@@ -41,7 +45,7 @@ function openPrePlan(evId) {
       let o = origin;
       if (!o) { const g = await getPosOnce(); o = { lat: g.lat, lon: g.lon, name: 'Mein Standort' }; }
       const t = new Date($('#ppT').value);
-      const its = bySafety(await planTo(ev, o, t, mode === 'arr')).slice(0, 4)
+      const its = bySafety((await planTo(ev, o, t, mode === 'arr')).filter(i => mode !== 'arr' || new Date(itinEnd(i)) <= t)).slice(0, 4)
         .sort((a, b) => mode === 'arr' ? new Date(b.legs[0].startTime) - new Date(a.legs[0].startTime) : new Date(itinEnd(a)) - new Date(itinEnd(b)));
       if (!its.length) { box.innerHTML = '<div class="warnbox">Keine Verbindung gefunden – anderen Start oder andere Zeit probieren.</div>'; return; }
       window._pp = { ev, o, t: t.toISOString(), mode, its };
@@ -57,6 +61,8 @@ function savePrePlan(k) {
     if ($('#ppHome')?.checked) S.settings.home = o;
   }
   save(); closeSheet(); toast('Anreise gespeichert ✓ – jederzeit änderbar'); render();
+  // Nächster Schritt der Reiseplanung: weite Anreise und noch kein Hotel → eigene Seite „Hotel?“
+  if (ev.kind !== 'hotel' && o.lat && haversine(o, ev.place) > 80000 && hotelNeeded(ev)) setTimeout(() => openHotelStep(ev.id), 400);
 }
 function removePrePlan(evId) { const ev = S.events.find(e => e.id === evId); if (ev) { delete ev.plan; save(); closeSheet(); render(); } }
 

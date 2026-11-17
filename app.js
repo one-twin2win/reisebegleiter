@@ -76,8 +76,35 @@ async function getJSON(url, opts = {}, timeout = 20000) {
 const qs = o => Object.entries(o).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
 const placeParam = p => p.stopId || `${p.lat},${p.lon}`;
 
-async function geocode(text) {
-  const out = [];
+/* Ortssuche in Stufen: gemerkte Orte → Google (optional, eigener Schlüssel) → Fahrplan-Halte → Photon (POIs, nach
+ * Reise-Ort gewichtet) → Nominatim. Ergebnisse nahe der aktuellen/nächsten Reise kommen zuerst. */
+const normKey = s => String(s || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+function geoContext() {
+  const ev = activeEvent() || nextEvent();
+  if (ev?.place?.lat) return { lat: ev.place.lat, lon: ev.place.lon, city: cityOf(ev) };
+  return GPS.pos ? { lat: GPS.pos.lat, lon: GPS.pos.lon } : null;
+}
+async function geocode(text, ctx = geoContext()) {
+  let out = [];
+  const q = normKey(text);
+  // 1) gemerkte Orte (z. B. „KOM27“ → Mauerstraße 27)
+  for (const [k, p] of Object.entries(S.placeAliases || {})) if (q && (k.includes(q) || q.includes(k))) out.push({ ...p, type: p.type || 'PLACE', known: true });
+  // 2) Google Places – nur mit eigenem Schlüssel
+  if (S.settings.googleKey) {
+    try {
+      const r = await getJSON('https://places.googleapis.com/v1/places:searchText', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': S.settings.googleKey, 'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location' }, body: JSON.stringify({ textQuery: text, languageCode: 'de', ...(ctx ? { locationBias: { circle: { center: { latitude: ctx.lat, longitude: ctx.lon }, radius: 50000 } } } : {}) }) });
+      for (const p of (r.places || []).slice(0, 5)) out.push({ name: p.displayName?.text, address: p.formattedAddress, lat: p.location.latitude, lon: p.location.longitude, type: 'PLACE', src: 'Google' });
+    } catch (e) { console.warn('google', e); }
+  }
+  // 3) Photon: findet Firmen, Veranstaltungsorte, Hotels; Ergebnisse nahe der Reise bevorzugt
+  try {
+    const r = await getJSON(`https://photon.komoot.io/api/?${qs({ q: text, limit: 6, lang: 'de', lat: ctx?.lat, lon: ctx?.lon })}`);
+    for (const f of r.features || []) {
+      const p = f.properties, [lon, lat] = f.geometry.coordinates;
+      const street = [p.street, p.housenumber].filter(Boolean).join(' ');
+      out.push({ name: p.name || street || p.city, lat, lon, type: p.osm_key === 'tourism' && p.osm_value === 'hotel' ? 'HOTEL' : 'PLACE', address: [street, [p.postcode, p.city].filter(Boolean).join(' ')].filter(Boolean).join(', ') });
+    }
+  } catch (e) { console.warn('photon', e); }
   try {
     const r = await getJSON(`${API}/v1/geocode?${qs({ text, language: 'de' })}`);
     for (const x of r.slice(0, 7)) {
@@ -91,7 +118,40 @@ async function geocode(text) {
       for (const x of r) out.push({ name: x.name || x.display_name.split(',')[0], lat: +x.lat, lon: +x.lon, type: x.type === 'hotel' ? 'HOTEL' : 'PLACE', address: x.display_name.split(',').slice(1, 4).join(',').trim() });
     } catch (e) { console.warn('nominatim', e); }
   }
-  return out;
+  // Dubletten raus; Treffer weit weg von der aktuellen Reise (> 300 km) nach hinten; Haltestellen nur, wenn der Name passt
+  const seen = new Set();
+  out = out.filter(o => o.lat && o.name && !seen.has(`${o.name}|${o.lat.toFixed(3)}`) && seen.add(`${o.name}|${o.lat.toFixed(3)}`));
+  const words = q.split(' ').filter(w => w.length > 2);
+  const score = (o, i) => i + (o.known ? -100 : 0) + (ctx && haversine(ctx, o) > 300000 ? 50 : 0) + (o.type === 'STOP' && words.length && !words.every(w => normKey(o.name).includes(w)) ? 30 : 0);
+  return out.map((o, i) => [o, score(o, i)]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+}
+/* Ort merken: Name (z. B. „KOM27“) → Adresse, damit er künftig direkt gefunden wird */
+function rememberPlace(name, place) {
+  if (!name || !place?.lat || normKey(name) === normKey(place.address || '')) return;
+  S.placeAliases = { ...(S.placeAliases || {}), [normKey(name)]: { name, address: place.address || place.name, lat: place.lat, lon: place.lon, type: place.type === 'HOTEL' ? 'HOTEL' : 'PLACE' } };
+  save();
+}
+/* Schlaue Suche für erkannte Ortsangaben: ganze Angabe → Adressteil → Name + Stadt → Name */
+async function geocodeSmart(query, contextText = '') {
+  const q = String(query || '').replace(/\s+/g, ' ').trim(); if (!q) return null;
+  const addr = q.match(/([A-ZÄÖÜ][\wäöüß.\- ]{2,40}?\s\d{1,4}\s?[a-z]?)\s*,?\s*(\d{5})\s+([A-ZÄÖÜ][\wäöüß\- ]+)/);
+  const name = q.split(/[,–|]| - | in (?=[A-ZÄÖÜ])/)[0].trim();
+  const city = addr?.[3] || (contextText.match(/\b\d{5}\s+([A-ZÄÖÜ][\wäöüß\-]+)/) || [])[1]
+    || (contextText.match(/\b(Berlin|Hamburg|München|Köln|Frankfurt|Aachen|Düsseldorf|Stuttgart|Leipzig|Dresden|Hannover|Bonn|Bremen|Nürnberg|Essen|Dortmund|Mainz|Wiesbaden|Potsdam|Karlsruhe|Mannheim|Münster|Freiburg|Erfurt|Kassel)\b/) || [])[1]
+    || geoContext()?.city || '';
+  const nameWords = normKey(name).split(' ').filter(w => w.length > 2 && normKey(city) !== w);
+  for (const tryQ of [addr && `${addr[1]}, ${addr[2]} ${addr[3]}`, q, name && city && `${name} ${city}`, name].filter(Boolean)) {
+    // Ohne Adresse nur Treffer akzeptieren, die den Namen wirklich enthalten (sonst lieber nachfragen als raten)
+    const r = (await geocode(tryQ)).filter(x => x.type !== 'STOP')
+      .filter(x => (addr && tryQ.startsWith(addr[1])) || x.known || !nameWords.length || nameWords.some(w => normKey(`${x.name} ${x.address}`).includes(w)));
+    if (r.length) {
+      const p = r[0];
+      // Veranstaltungsort-Name behalten, Adresse aus dem Treffer
+      if (name && tryQ !== name && normKey(p.name) !== normKey(name)) { const named = { ...p, name: name || p.name, address: p.address || p.name }; rememberPlace(name, named); return named; }
+      return p;
+    }
+  }
+  return null;
 }
 async function nearestStops(lat, lon) {
   try {
@@ -940,6 +1000,8 @@ function openEvent(id) {
       <button class="btn block" onclick="closeSheet();openRideSetup('${e.id}')">🚄 Ich sitze schon im Zug</button>
       <button class="btn block" onclick="openAdd('${e.id}')">✏️ Bearbeiten</button>
       <button class="btn block" onclick="exportICS('${e.id}')">📆 In Kalender exportieren (.ics)</button>
+      ${e.kind !== 'hotel' ? `<button class="btn block" onclick="closeSheet();openHotelStep('${e.id}')">🏨 Hotel suchen</button>` : e.booking && e.booking.status !== 'gebucht' ? `<button class="btn block" onclick="S.pendingBooking={evId:'${e.id}',via:'${e.booking.via === 'vorgemerkt' ? 'Booking.com' : e.booking.via}',at:0};closeSheet();checkBookingReturn()">✅ Als gebucht markieren</button>` : ''}
+      <button class="btn block" onclick="window._nextAfter='${e.id}';closeSheet();openAdd()">➕ Nächste Etappe ab hier planen</button>
       <button class="btn block" onclick="askArchive('${e.id}')">🗄️ Reise archivieren</button>
       <button class="btn block danger" onclick="delEvent('${e.id}')">Löschen</button>
     </div>`);
@@ -969,6 +1031,7 @@ function openAdd(editId) {
     <label class="f">Wann musst du dort sein?</label>
     <div class="chips" id="timeChips"><button class="chip" data-t="open">Offen</button><button class="chip" data-t="1h">in 1 h</button><button class="chip" data-t="eve">heute 20:00</button><button class="chip" data-t="tm9">morgen 9:00</button></div>
     <input class="input" style="margin-top:8px" type="datetime-local" id="startInput" value="${e.start ? localInputValue(new Date(e.start)) : ''}">
+    <label class="row small" style="margin-top:8px"><input type="checkbox" id="arrByChk" ${e.arriveBy ? 'checked' : ''}> Das ist die Zeit, zu der ich <b>spätestens dort</b> sein muss</label>
     <div id="checkWrap" class="${kind === 'hotel' ? '' : 'hidden'}"><label class="f">Check-in ab</label><input class="input" id="checkIn" placeholder="15:00" value="${esc(e.checkIn || '')}"></div>
     <label class="f">Notizen (Buchungsnr., Ansprechpartner…)</label><textarea class="input" id="notesInput" style="min-height:70px">${esc(e.notes || '')}</textarea>
     <label class="row small" style="margin-top:10px"><input type="checkbox" id="favChk"> Als Favorit merken</label>
@@ -988,23 +1051,39 @@ function openAdd(editId) {
     if (!place && $('#placeInput').value.trim()) { const g = await geocode($('#placeInput').value.trim()); place = g[0]; }
     if (!place) { toast('Bitte einen Ort wählen'); return; }
     const data = { kind, place, title: $('#titleInput').value.trim() || place.name, start: $('#startInput').value ? new Date($('#startInput').value).toISOString() : null, checkIn: kind === 'hotel' ? $('#checkIn').value.trim() : '', notes: $('#notesInput').value.trim() };
+    data.arriveBy = $('#arrByChk').checked && data.start ? data.start : null;
+    if (data.title && place && normKey(data.title) !== normKey(place.name) && place.type !== 'STOP') rememberPlace(data.title, place); // „KOM27“ → Adresse merken
     const newId = uid();
     if (editId) Object.assign(e, data); else S.events.push({ id: newId, ...data });
     if ($('#favChk').checked && !S.favorites.some(f => f.name === place.name)) S.favorites.push(place);
     save(); closeSheet(); toast('Gespeichert ✓'); render();
     // neuer Termin in der Zukunft → direkt anbieten, die Anreise vorzuplanen (optional)
-    if (!editId && data.start && new Date(data.start) - Date.now() > 3600e3) setTimeout(() => openEvent(newId), 350);
+    if (!editId) {
+      const ne = S.events.find(x => x.id === newId);
+      // Folgeetappe einer laufenden/gebuchten Reise? → Anfahrt ab dort anbieten; sonst Termin zum Vorplanen öffnen
+      if (ne.kind !== 'hotel' && ne.start && findAnchor(ne)) setTimeout(() => offerFollowUp(ne), 350);
+      else if (data.start && new Date(data.start) - Date.now() > 3600e3) setTimeout(() => openEvent(newId), 350);
+    }
   };
 }
 function placeAutocomplete(input, box, onPick, focus = false, stopsOnly = false) {
-  if (!input) return; let t;
+  if (!input) return; let t, missed = null; // „missed“: Name ohne Treffer (z. B. KOM27) – wird mit der danach gewählten Adresse verknüpft
   input.oninput = () => {
     clearTimeout(t); const q = input.value.trim(); if (q.length < 3) { box.innerHTML = ''; return; }
     t = setTimeout(async () => {
       box.innerHTML = '<div class="row small muted" style="margin-top:8px"><span class="spinner"></span> suche…</div>';
       let r = await geocode(q); if (stopsOnly) r = r.filter(x => x.type === 'STOP');
-      box.innerHTML = r.length ? `<div class="sugg">${r.slice(0, 7).map((x, k) => `<button data-k="${k}"><span>${x.type === 'STOP' ? '🚉' : x.type === 'HOTEL' ? '🏨' : '📍'}</span><span class="grow"><b>${esc(x.name)}</b><div class="small muted">${esc(x.address || '')}</div></span></button>`).join('')}</div>` : '<div class="small muted" style="margin-top:6px">Nichts gefunden</div>';
-      $$('button', box).forEach(b => b.onclick = () => { const p = r[+b.dataset.k]; input.value = p.name; box.innerHTML = ''; onPick(p); });
+      const city = geoContext()?.city || '';
+      const web = `https://www.google.com/maps/search/?${qs({ api: 1, query: city && !q.toLowerCase().includes(city.toLowerCase()) ? `${q} ${city}` : q })}`;
+      if (!r.length && !stopsOnly) missed = q;
+      box.innerHTML = (r.length ? `<div class="sugg">${r.slice(0, 7).map((x, k) => `<button data-k="${k}"><span>${x.known ? '⭐' : x.type === 'STOP' ? '🚉' : x.type === 'HOTEL' ? '🏨' : '📍'}</span><span class="grow"><b>${esc(x.name)}</b><div class="small muted">${esc(x.address || '')}${x.src ? ' · ' + esc(x.src) : ''}</div></span></button>`).join('')}</div>`
+        : `<div class="warnbox">„${esc(q)}“ ist in den freien Kartendaten nicht verzeichnet. Schau die Adresse nach und gib sie hier ein (z. B. „Mauerstraße 27 Berlin“) – ich merke mir, dass „${esc(q)}“ dort ist.</div>`)
+        + (stopsOnly ? '' : `<a class="btn ghost sm" style="padding-left:0" target="_blank" rel="noopener" href="${esc(web)}">🔎 ${r.length ? 'Nicht dabei? ' : ''}In Google Maps suchen</a>`);
+      $$('button[data-k]', box).forEach(b => b.onclick = () => {
+        let p = r[+b.dataset.k];
+        if (missed && normKey(missed) !== normKey(p.name) && !stopsOnly) { p = { ...p, name: missed, address: p.address || p.name }; rememberPlace(missed, p); toast(`Gemerkt: ${missed} = ${p.address}`); missed = null; }
+        input.value = p.name; box.innerHTML = ''; onPick(p);
+      });
     }, 350);
   };
   if (focus) setTimeout(() => input.focus(), 300);
@@ -1106,16 +1185,20 @@ function agendaExtract(txt) {
   if (!isAgenda || !place) return null;
   const room = lineAfter(/(?:raum|saal|etage|gebäude)\s*[:：]?\s*([^\n,]{1,40})/i);
   const d = parseGermanDate(txt) || new Date();
-  const tm = txt.match(/(?:beginn|start|uhrzeit|zeit|von|ab)?\s*[:：]?\s*(\d{1,2})[:.](\d{2})\s*(?:uhr)?\s*(?:[-–bis]+\s*(\d{1,2})[:.](\d{2}))?/i);
-  let start = null, end = null;
-  if (tm) { const s = new Date(d); s.setHours(+tm[1], +tm[2], 0, 0); start = s.toISOString(); if (tm[3]) { const e = new Date(d); e.setHours(+tm[3], +tm[4], 0, 0); end = e.toISOString(); } }
-  else { const s = new Date(d); s.setHours(9, 0, 0, 0); start = s.toISOString(); }
+  // Uhrzeiten – aber keine Datumsteile wie „18.11.“
+  const T = '(\\d{1,2})[:.](\\d{2})(?![.\\d])';
+  const at = m => { if (!m) return null; const s = new Date(d); s.setHours(+m[1], +m[2], 0, 0); return s.toISOString(); };
+  const mStart = txt.match(new RegExp(`(?:beginn|start|uhrzeit|zeit|ab)\\s*[:：]?\\s*(?:um\\s*)?${T}`, 'i')) || txt.match(new RegExp(`(?<![\\d.])${T}\\s*uhr`, 'i')) || txt.match(new RegExp(`(?<![\\d.])${T}`));
+  const mEnd = txt.match(new RegExp(`${T}\\s*(?:uhr)?\\s*(?:-|–|bis)\\s*${T}`, 'i'));
+  const mBy = txt.match(new RegExp(`(?:spätestens|einlass bis|bitte bis|ankunft bis)\\s*(?:um\\s*)?${T}`, 'i'));
+  let start = at(mStart) || at([0, 9, 0]), end = mEnd ? at([0, mEnd[3], mEnd[4]]) : null;
+  const arriveBy = at(mBy);
   const title = lineAfter(/(?:betreff|thema|titel)\s*[:：]\s*([^\n]+)/i)
     || lineAfter(/(einladung\s+(?:zur|zum|zu)\s+[^\n]+)/i)
     || lineAfter(/((?:sitzung|workshop|konferenz|tagung|seminar|meeting|besprechung)[^\n]{0,60})/i)
     || txt.split('\n').map(s => s.trim()).find(s => s.length > 4) || 'Termin';
   const contact = lineAfter(/(?:ansprechpartner(?:in)?|kontakt)\s*[:：]\s*([^\n]+)/i);
-  return { kind: 'termin', title: title.replace(/^einladung\s+(zur|zum|zu)\s+/i, '').replace(/^\w/, c => c.toUpperCase()).slice(0, 80), query: place.replace(/\n/g, ', '), start, end, notes: [room && 'Raum: ' + room, contact && 'Kontakt: ' + contact].filter(Boolean).join('\n') };
+  return { kind: 'termin', title: title.replace(/^einladung\s+(zur|zum|zu)\s+/i, '').replace(/^\w/, c => c.toUpperCase()).slice(0, 80), query: place.replace(/\n/g, ', '), start, end, notes: [room && 'Raum: ' + room, contact && 'Kontakt: ' + contact].filter(Boolean).join('\n'), context: txt.slice(0, 2000), arriveBy };
 }
 /* Regelbasierte Erkennung (ohne KI) */
 function ruleExtract(t) {
@@ -1174,17 +1257,35 @@ async function reviewDrafts(drafts) {
   out.innerHTML = '<div class="row" style="margin-top:12px"><span class="spinner"></span> Suche Orte…</div>';
   for (const d of drafts) {
     d.query = (d.query || '').replace(/\s*\n\s*/g, ' ').replace(/\s+,/g, ',').trim();
-    if (d.query) { const g = await geocode(d.query); d.place = g.find(x => x.type !== 'STOP') && d.kind !== 'zug' ? g.find(x => x.type !== 'STOP') : g[0]; if (!d.place && d.title) d.place = (await geocode(d.title))[0]; }
+    if (d.query) {
+      if (d.kind === 'zug') d.place = (await geocode(d.query))[0];
+      else d.place = await geocodeSmart(d.query, `${d.title}\n${d.notes || ''}\n${d.context || ''}`); // erkennt z. B. „KOM27, Mauerstraße 27, 10117 Berlin“
+      // kein Raten über den Titel – dann lieber nachfragen (Eingabefeld in der Prüfansicht)
+    }
   }
   window._drafts = drafts;
   const o2 = $('#impOut') || $('#sheetBody');
-  o2.innerHTML = `<label class="f">Erkannt – bitte prüfen</label><div class="list">${drafts.map((d, k) => `<div class="card flat" style="margin:0"><label class="row"><input type="checkbox" checked data-k="${k}" style="width:22px;height:22px"><div class="grow"><b>${KIND[d.kind]?.ico || '📍'} ${esc(d.title)}</b><div class="small muted">${d.place ? esc(d.place.name + (d.place.address ? ', ' + d.place.address : '')) : '<span style="color:var(--bad)">Ort nicht gefunden – nach dem Import bearbeiten</span>'}</div><div class="small">${d.start ? fmtD(d.start) + ', ' + fmtT(d.start) : 'Zeit offen'}${d.checkIn ? ' · Check-in ' + esc(d.checkIn) : ''}${d.train?.name ? ' · ' + esc(d.train.name) : ''}</div></div></label></div>`).join('')}</div>
+  o2.innerHTML = `<label class="f">Erkannt – bitte prüfen</label><div class="list">${drafts.map((d, k) => `<div class="card flat" style="margin:0"><label class="row"><input type="checkbox" checked data-k="${k}" style="width:22px;height:22px"><div class="grow"><b>${KIND[d.kind]?.ico || '📍'} ${esc(d.title)}</b><div class="small muted">${d.place ? esc(d.place.name + (d.place.address ? ', ' + d.place.address : '')) : `<span style="color:var(--warn)">„${esc((d.query || '').split(/[,–|]| in (?=[A-ZÄÖÜ])/)[0])}“ – Adresse unbekannt. Bitte suchen oder eingeben:</span><input class="input" data-pq="${k}" style="margin-top:6px;font-size:16px" placeholder="z. B. Straße + Nr., Ort" autocomplete="off"><div data-ps="${k}"></div>`}</div><div class="small">${d.start ? fmtD(d.start) + ', ' + fmtT(d.start) : 'Zeit offen'}${d.checkIn ? ' · Check-in ' + esc(d.checkIn) : ''}${d.train?.name ? ' · ' + esc(d.train.name) : ''}</div></div></label></div>`).join('')}</div>
     <button class="btn primary block" style="margin-top:12px" onclick="importDrafts()">Übernehmen</button>`;
+  // unbekannte Orte direkt hier nachtragen; der Name (z. B. „KOM27“) wird mit der gewählten Adresse verknüpft
+  $$('[data-pq]', o2).forEach(inp => {
+    const k = +inp.dataset.pq, d = drafts[k], nm = (d.query || '').split(/[,–|]| in (?=[A-ZÄÖÜ])/)[0].trim();
+    placeAutocomplete(inp, $(`[data-ps="${k}"]`, o2), p => {
+      d.place = nm && normKey(nm) !== normKey(p.name) ? { ...p, name: nm, address: p.address || p.name } : p;
+      if (nm) rememberPlace(nm, d.place);
+      inp.insertAdjacentHTML('afterend', `<div class="okbox">✓ ${esc(d.place.name)} = ${esc(d.place.address || '')}</div>`); inp.remove();
+    });
+  });
 }
 function importDrafts() {
   const sel = $$('input[data-k]').filter(c => c.checked).map(c => window._drafts[+c.dataset.k]);
-  sel.forEach(d => S.events.push({ id: uid(), kind: d.kind, title: d.title, place: d.place || { name: d.query || d.title, lat: 52.52, lon: 13.40 }, start: d.start || null, end: d.end || null, checkIn: d.checkIn || '', notes: d.notes || '', train: d.train || null }));
+  const noPlace = sel.find(d => !d.place);
+  if (noPlace) { toast(`Bitte zuerst den Ort für „${noPlace.title}“ angeben`); $(`[data-pq]`)?.focus(); return; }
+  const added = sel.map(d => { const e = { id: uid(), kind: d.kind, title: d.title, place: d.place || { name: d.query || d.title, lat: 52.52, lon: 13.40 }, start: d.start || null, end: d.end || null, arriveBy: d.arriveBy || null, checkIn: d.checkIn || '', notes: d.notes || '', train: d.train || null }; S.events.push(e); return e; });
   save(); closeSheet(); toast(`${sel.length} übernommen ✓`); go('plan');
+  // Folgeetappe einer Reise? (z. B. Termin in Berlin, während das Hotel in Berlin schon gebucht ist)
+  const firstFollow = added.find(e => e.kind !== 'hotel' && e.start && findAnchor(e));
+  if (firstFollow) setTimeout(() => offerFollowUp(firstFollow), 350);
   feed('Neue Einträge', sel.map(d => `• ${d.title}${d.start ? ' – ' + fmtD(d.start) + ' ' + fmtT(d.start) : ''}`).join('\n'), 'ok');
 }
 function exportICS(id) {
@@ -1295,6 +1396,8 @@ function renderMehr() {
     <label class="f">Claude API-Schlüssel – versteht E-Mails, Screenshots & freie Fragen</label><input class="input" type="password" data-t="claudeKey" value="${esc(st.claudeKey)}" placeholder="sk-ant-…">
     <label class="f">Claude-Modell</label><select class="input" data-t="claudeModel">${['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'].map(m => `<option ${m === st.claudeModel ? 'selected' : ''}>${m}</option>`).join('')}</select>
     <label class="f">HERE API-Schlüssel – Auto-Fahrzeit mit Stau (kostenloses Kontingent)</label><input class="input" type="password" data-t="hereKey" value="${esc(st.hereKey)}" placeholder="optional">
+    <label class="f">Google-Maps-Schlüssel (Places API) – findet auch Orte wie Konferenzzentren, die nicht in den freien Karten stehen</label><input class="input" type="password" data-t="googleKey" value="${esc(st.googleKey || '')}" placeholder="optional">
+    <div class="small muted" style="margin-top:6px">Gemerkte Orte: ${Object.keys(S.placeAliases || {}).length} ${Object.keys(S.placeAliases || {}).length ? `<a href="#" onclick="if(confirm('Gemerkte Orte löschen?')){S.placeAliases={};save();renderMehr()}return false">löschen</a>` : ''}</div>
   </div>
   <div class="card"><h3>Verbesserungen</h3><div class="small muted">${S.feedback.length} Rückmeldungen gespeichert. Die App passt Schwellen selbst an; Wünsche kannst du exportieren und zur Weiterentwicklung weitergeben.</div>
     <div class="row wrap" style="margin-top:10px"><button class="btn sm" onclick="maybeAskFeedback('manual');go('assist')">Feedback geben</button><button class="btn sm" onclick="exportFeedback()">Exportieren / Teilen</button></div></div>

@@ -40,6 +40,21 @@
 - Uber/Bolt/FREENOW/Taxi direkt bestellen (Abholung = Standort, Ziel vorausgefüllt); nach der Fahrt Beleg-Abfrage
   mit Kamera, Beleg landet als „Taxi / Uber“ bei der Reise
 
+## Stufe 1f (erledigt)
+- Ortssuche mehrstufig: gemerkte Orte → Google Places (optional, eigener Schlüssel) → Photon → Fahrplan → Nominatim,
+  gewichtet nach Reiseort; unbekannte Namen (z. B. „KOM27“) werden nicht geraten, sondern nachgefragt und danach gemerkt
+- Einladungen: Beginn, Ende und „spätestens/Einlass bis“ getrennt erkannt; Stadt aus dem Text als Kontext
+- Folgeetappen: Termin nahe einer laufenden/gebuchten Etappe (z. B. Hotel) → verknüpft, Anfahrt ab dort,
+  „spätestens dort“ exakt eingehalten; „Danach: …“ in der Kopfkarte; „Nächste Etappe ab hier planen“
+
+## Stufe 1g (erledigt)
+- Reiseplanung mit eigener Seite „Brauchst du ein Hotel?“ (automatisch bei weiter Anreise ohne Hotel, sonst per Knopf)
+- Filter: An-/Abreise (Vortag bei Morgen-Terminen), Personen, Zimmer, Entfernung, Preis, Sterne, Frühstück,
+  kostenlose Stornierung, Bewertung 8+ → Booking.com-Suche mit allen Filtern; Hotelliste nahe Ziel (OSM)
+- Preisvergleich Booking ↔ direkt (Eingabe + Google-Preisvergleich), Buchung per Link, „Hast du gebucht?“ →
+  Buchungsnr. & Preis → Reisekosten; Hotel sofort als Etappe gespeichert, Weg Hotel → Termin automatisch geplant
+- Grenzen: Booking/Hotels haben keine offene Preis-Schnittstelle → Preise kommen von den geöffneten Seiten
+
 ## Ideen aus dem Test (noch offen)
 - Wagenreihung/Gleisabschnitt automatisch (sobald eine offene Datenquelle verfügbar ist)
 - Nachts automatisch Taxi/Uber empfehlen, wenn ÖPNV-Rest > 2× so lang
