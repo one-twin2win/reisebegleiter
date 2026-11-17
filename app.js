@@ -1009,9 +1009,11 @@ function openEvent(id) {
 function delEvent(id) { if (!confirm('Termin löschen?')) return; S.events = S.events.filter(e => e.id !== id); if (S.active?.eventId === id) S.active = null; save(); closeSheet(); render(); }
 
 /* Eingabe: Schnell-Eingabe */
-function openAdd(editId) {
-  const e = editId ? S.events.find(x => x.id === editId) : { kind: 'hotel', title: '', place: null, start: null };
+function openAdd(editId, prefill = null) {
+  const e = editId ? { ...S.events.find(x => x.id === editId), ...(prefill || {}) } : { kind: 'hotel', title: '', place: null, start: null, ...(prefill || {}) };
   let place = e.place, kind = e.kind;
+  // Für den Absprung zu Google: Formular sichern, damit es bei der Rückkehr wieder da ist
+  window._lookupResume = { type: 'add', data: () => ({ editId, form: { kind, place, title: $('#titleInput')?.value || '', start: $('#startInput')?.value ? new Date($('#startInput').value).toISOString() : null, arriveBy: $('#arrByChk')?.checked ? 'x' : null, checkIn: $('#checkIn')?.value || '', notes: $('#notesInput')?.value || '' } }) };
   openSheet(`<h2>${editId ? 'Bearbeiten' : 'Neues Ziel'}</h2>
     ${editId ? '' : `<div class="bigchoices" style="margin-bottom:6px">
       <button class="bigchoice" onclick="openImport('text')"><div class="ico">✉️</div><b>Aus E-Mail</b><span>Text einfügen</span></button>
@@ -1073,21 +1075,81 @@ function placeAutocomplete(input, box, onPick, focus = false, stopsOnly = false)
     t = setTimeout(async () => {
       box.innerHTML = '<div class="row small muted" style="margin-top:8px"><span class="spinner"></span> suche…</div>';
       let r = await geocode(q); if (stopsOnly) r = r.filter(x => x.type === 'STOP');
-      const city = geoContext()?.city || '';
+      // ähnlich klingende Treffer weit weg (z. B. „KOM2“ in Frankreich für „KOM27“) gelten als „nicht gefunden“
+      const ctx = geoContext(), nq = normKey(q).split(' ')[0];
+      r = r.filter(x => x.known || normKey(`${x.name} ${x.address || ''}`).includes(nq) || !ctx || haversine(ctx, x) < 300000);
+      const city = ctx?.city || '';
       const web = `https://www.google.com/maps/search/?${qs({ api: 1, query: city && !q.toLowerCase().includes(city.toLowerCase()) ? `${q} ${city}` : q })}`;
       if (!r.length && !stopsOnly) missed = q;
       box.innerHTML = (r.length ? `<div class="sugg">${r.slice(0, 7).map((x, k) => `<button data-k="${k}"><span>${x.known ? '⭐' : x.type === 'STOP' ? '🚉' : x.type === 'HOTEL' ? '🏨' : '📍'}</span><span class="grow"><b>${esc(x.name)}</b><div class="small muted">${esc(x.address || '')}${x.src ? ' · ' + esc(x.src) : ''}</div></span></button>`).join('')}</div>`
-        : `<div class="warnbox">„${esc(q)}“ ist in den freien Kartendaten nicht verzeichnet. Schau die Adresse nach und gib sie hier ein (z. B. „Mauerstraße 27 Berlin“) – ich merke mir, dass „${esc(q)}“ dort ist.</div>`)
-        + (stopsOnly ? '' : `<a class="btn ghost sm" style="padding-left:0" target="_blank" rel="noopener" href="${esc(web)}">🔎 ${r.length ? 'Nicht dabei? ' : ''}In Google Maps suchen</a>`);
-      $$('button[data-k]', box).forEach(b => b.onclick = () => {
-        let p = r[+b.dataset.k];
-        if (missed && normKey(missed) !== normKey(p.name) && !stopsOnly) { p = { ...p, name: missed, address: p.address || p.name }; rememberPlace(missed, p); toast(`Gemerkt: ${missed} = ${p.address}`); missed = null; }
-        input.value = p.name; box.innerHTML = ''; onPick(p);
-      });
+        : `<div class="warnbox">„${esc(q)}“ ist in den freien Kartendaten nicht verzeichnet. Such die Adresse in Google Maps, tippe dort auf <b>Teilen → Kopieren</b> (oder kopiere die Adresse) und komm zurück – ich übernehme sie und merke mir „${esc(q)}“.</div>`)
+        + (stopsOnly ? '' : `<div class="row wrap" style="gap:6px;margin-top:6px">${!r.length ? '<button class="btn sm primary" data-paste>📋 Adresse einfügen</button>' : ''}<a class="btn ghost sm" style="padding-left:0" target="_blank" rel="noopener" href="${esc(web)}" data-web>🔎 ${r.length ? 'Nicht dabei? ' : ''}In Google Maps suchen</a></div>`);
+      $$('button[data-k]', box).forEach(b => b.onclick = () => pick(r[+b.dataset.k]));
+      const w = $('[data-web]', box); if (w) w.onclick = () => saveLookup(missed || q);
+      const pb = $('[data-paste]', box); if (pb) pb.onclick = async () => {
+        try { applyPasted(await navigator.clipboard.readText()); } catch { toast('Bitte lange ins Feld tippen → „Einsetzen“'); input.focus(); }
+      };
     }, 350);
   };
+  const pick = p => {
+    if (missed && normKey(missed) !== normKey(p.name) && !stopsOnly) { p = { ...p, name: missed, address: p.address || p.name }; rememberPlace(missed, p); toast(`Gemerkt: ${missed} = ${p.address}`); missed = null; }
+    S.pendingLookup = null; save();
+    input.value = p.name; box.innerHTML = ''; onPick(p);
+  };
+  // Aus Google Maps kopierter Text (Name, Adresse, Link) → Ort erkennen und direkt übernehmen
+  const applyPasted = async text => {
+    const c = parseCopiedPlace(text || '');
+    if (c.shortOnly) { toast('Nur ein Kurzlink – bitte in Google Maps die Adresse kopieren'); return; }
+    if (!c.address && !c.coords) { toast('Keine Adresse in der Zwischenablage gefunden'); return; }
+    box.innerHTML = '<div class="row small muted" style="margin-top:8px"><span class="spinner"></span> übernehme Adresse…</div>';
+    let p = null;
+    if (c.coords) { const a = await revGeo(c.coords); p = { lat: c.coords.lat, lon: c.coords.lon, name: c.name || a || 'Ort', address: c.address || a, type: 'PLACE' }; }
+    else { p = (await geocode(c.address)).find(x => x.type !== 'STOP'); if (p) p = { ...p, address: c.address }; }
+    if (!p) { input.value = c.address; input.dispatchEvent(new Event('input')); return; }
+    if (!missed && c.name && normKey(c.name) !== normKey(p.name)) p.name = c.name;
+    pick(p);
+  };
+  input.addEventListener('paste', e => {
+    const t = e.clipboardData?.getData('text') || '';
+    if (/\n|goo\.gl|google\.|maps\.app/.test(t)) { e.preventDefault(); if (!missed && input.value.trim().length > 2) missed = input.value.trim(); applyPasted(t); }
+  });
   if (focus) setTimeout(() => input.focus(), 300);
 }
+/* Google-Maps-Text auswerten: „Name\nStraße 1, 12345 Ort\nhttps://maps…“ oder Link mit Koordinaten */
+function parseCopiedPlace(t) {
+  const txt = String(t).trim();
+  const lines = txt.split(/\n+/).map(s => s.trim()).filter(Boolean).filter(l => !/^https?:\/\//.test(l));
+  const addr = lines.find(l => /\b\d{5}\s+\S/.test(l)) || lines.find(l => /\d/.test(l) && /(str\.|straße|strasse|weg|platz|allee|damm|ring|ufer|gasse|chaussee)/i.test(l)) || (lines.length === 1 ? lines[0] : null);
+  const m = txt.match(/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) || txt.match(/[?&](?:q|ll|query|destination)=(-?\d{1,2}\.\d+),\s*(-?\d{1,3}\.\d+)/);
+  const urlName = (txt.match(/\/maps\/place\/([^/@?]+)/) || [])[1];
+  const name = lines.length > 1 && lines[0] !== addr ? lines[0] : urlName ? decodeURIComponent(urlName.replace(/\+/g, ' ')) : null;
+  return { address: addr, name, coords: m ? { lat: +m[1], lon: +m[2] } : null, shortOnly: /maps\.app\.goo\.gl|goo\.gl\/maps/.test(txt) && !addr && !m };
+}
+/* Absprung zu Google: aktuellen Planungsstand sichern … */
+function saveLookup(q) {
+  const r = window._lookupResume; if (!r) return;
+  S.pendingLookup = { q, at: Date.now(), type: r.type, data: typeof r.data === 'function' ? r.data() : r.data }; save();
+}
+/* … und bei der Rückkehr die Planung wieder öffnen */
+function resumeLookup() {
+  const L = S.pendingLookup; if (!L || document.hidden) return;
+  if (Date.now() - L.at > 3 * 3600e3) { S.pendingLookup = null; save(); return; }
+  if (Date.now() - L.at < 1500) return; // nicht direkt beim Antippen des Links
+  const open = !$('#sheet').classList.contains('hidden');
+  if (L.resumed && !open) { S.pendingLookup = null; save(); return; } // schon wiederhergestellt und dann geschlossen
+  if (open && $('#placeInput, [data-pq]')) { L.resumed = true; save(); return; } // Formular ist noch offen (App lief weiter)
+  L.resumed = true; save();
+  if (L.type === 'import' && L.data?.drafts) { openImport('text'); reviewDrafts(L.data.drafts, true); }
+  else if (L.type === 'add' && L.data) {
+    const f = L.data.form || {};
+    openAdd(L.data.editId || null, { ...f, arriveBy: f.arriveBy ? f.start : null });
+    const inp = $('#placeInput');
+    if (inp && L.q) { inp.value = L.q; inp.dispatchEvent(new Event('input')); }
+    toast('↩︎ Zurück aus Google – Adresse kopiert? Tippe auf „📋 Adresse einfügen“', 5000);
+  }
+}
+document.addEventListener('visibilitychange', () => setTimeout(resumeLookup, 600));
+window.addEventListener('pageshow', () => setTimeout(resumeLookup, 800));
 
 /* ───────────── Import: E-Mail-Text, Screenshot, .ics ───────────── */
 function openImport(mode) {
@@ -1252,10 +1314,12 @@ function parseICS(src) {
   }
   return out.filter(e => e.start && new Date(e.start) > Date.now() - 86400e3).map(e => ({ kind: /hotel|motel|check-?in/i.test(e.title + e.query) ? 'hotel' : /\b(ICE|IC|RE|Zug)\b/.test(e.title) ? 'zug' : 'termin', ...e, query: e.query || e.title }));
 }
-async function reviewDrafts(drafts) {
+async function reviewDrafts(drafts, resumed = false) {
   const out = $('#impOut') || $('#sheetBody');
   out.innerHTML = '<div class="row" style="margin-top:12px"><span class="spinner"></span> Suche Orte…</div>';
-  for (const d of drafts) {
+  // Für den Absprung zu Google: erkannte Einträge sichern
+  window._lookupResume = { type: 'import', data: () => ({ drafts: window._drafts }) };
+  if (!resumed) for (const d of drafts) {
     d.query = (d.query || '').replace(/\s*\n\s*/g, ' ').replace(/\s+,/g, ',').trim();
     if (d.query) {
       if (d.kind === 'zug') d.place = (await geocode(d.query))[0];
@@ -1265,11 +1329,12 @@ async function reviewDrafts(drafts) {
   }
   window._drafts = drafts;
   const o2 = $('#impOut') || $('#sheetBody');
-  o2.innerHTML = `<label class="f">Erkannt – bitte prüfen</label><div class="list">${drafts.map((d, k) => `<div class="card flat" style="margin:0"><label class="row"><input type="checkbox" checked data-k="${k}" style="width:22px;height:22px"><div class="grow"><b>${KIND[d.kind]?.ico || '📍'} ${esc(d.title)}</b><div class="small muted">${d.place ? esc(d.place.name + (d.place.address ? ', ' + d.place.address : '')) : `<span style="color:var(--warn)">„${esc((d.query || '').split(/[,–|]| in (?=[A-ZÄÖÜ])/)[0])}“ – Adresse unbekannt. Bitte suchen oder eingeben:</span><input class="input" data-pq="${k}" style="margin-top:6px;font-size:16px" placeholder="z. B. Straße + Nr., Ort" autocomplete="off"><div data-ps="${k}"></div>`}</div><div class="small">${d.start ? fmtD(d.start) + ', ' + fmtT(d.start) : 'Zeit offen'}${d.checkIn ? ' · Check-in ' + esc(d.checkIn) : ''}${d.train?.name ? ' · ' + esc(d.train.name) : ''}</div></div></label></div>`).join('')}</div>
+  o2.innerHTML = `${resumed ? '<div class="okbox">↩︎ Zurück aus Google – deine Einträge sind noch da. Adresse kopiert? Tippe unten auf „📋 Adresse einfügen“.</div>' : ''}<label class="f">Erkannt – bitte prüfen</label><div class="list">${drafts.map((d, k) => `<div class="card flat" style="margin:0"><label class="row"><input type="checkbox" checked data-k="${k}" style="width:22px;height:22px"><div class="grow"><b>${KIND[d.kind]?.ico || '📍'} ${esc(d.title)}</b><div class="small muted">${d.place ? esc(d.place.name + (d.place.address ? ', ' + d.place.address : '')) : `<span style="color:var(--warn)">„${esc((d.query || '').split(/[,–|]| in (?=[A-ZÄÖÜ])/)[0])}“ – Adresse unbekannt. Bitte suchen oder eingeben:</span><input class="input" data-pq="${k}" style="margin-top:6px;font-size:16px" placeholder="z. B. Straße + Nr., Ort" autocomplete="off"><div data-ps="${k}"></div>`}</div><div class="small">${d.start ? fmtD(d.start) + ', ' + fmtT(d.start) : 'Zeit offen'}${d.checkIn ? ' · Check-in ' + esc(d.checkIn) : ''}${d.train?.name ? ' · ' + esc(d.train.name) : ''}</div></div></label></div>`).join('')}</div>
     <button class="btn primary block" style="margin-top:12px" onclick="importDrafts()">Übernehmen</button>`;
   // unbekannte Orte direkt hier nachtragen; der Name (z. B. „KOM27“) wird mit der gewählten Adresse verknüpft
   $$('[data-pq]', o2).forEach(inp => {
     const k = +inp.dataset.pq, d = drafts[k], nm = (d.query || '').split(/[,–|]| in (?=[A-ZÄÖÜ])/)[0].trim();
+    if (resumed) { inp.value = nm; setTimeout(() => inp.dispatchEvent(new Event('input')), 50); }
     placeAutocomplete(inp, $(`[data-ps="${k}"]`, o2), p => {
       d.place = nm && normKey(nm) !== normKey(p.name) ? { ...p, name: nm, address: p.address || p.name } : p;
       if (nm) rememberPlace(nm, d.place);
@@ -1439,6 +1504,7 @@ function init() {
   else if (navigator.permissions) navigator.permissions.query({ name: 'geolocation' }).then(p => { if (p.state === 'granted') startGPS(); }).catch(() => { });
   if (S.drive) { startGPS(); keepAwake(true); }
   purgeArchive();
+  setTimeout(resumeLookup, 1200); // iOS hat die App beim Wechsel zu Google evtl. beendet → Planung wiederherstellen
   if (S.guideState?.dest) startWalkGuide(S.guideState.dest, S.guideState.ctx || {}); // laufende Führung fortsetzen
   if (S.transitGuide || S.pendingGuide) startGPS();
   $('#settingsBtn').onclick = () => go('mehr');
