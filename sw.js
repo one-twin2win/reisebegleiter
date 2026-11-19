@@ -1,5 +1,5 @@
 ﻿// Service Worker: Offline-Shell + Mitteilungen
-const CACHE = 'reisebegleiter-v10';
+const CACHE = 'reisebegleiter-v11';
 const SHELL = ['./', './index.html', './app.js', './costs.js', './guide.js', './archive.js', './preplan.js', './ridefind.js', './trip.js', './followup.js', './hotel.js', './nav.js', './styles.css', './manifest.webmanifest', './icon.svg', './icon-192.png'];
 
 self.addEventListener('install', e => {
@@ -16,11 +16,11 @@ self.addEventListener('fetch', e => {
   // Live-Daten nie aus dem Cache
   if (url.origin !== self.location.origin) return;
   e.respondWith(
-    fetch(e.request).then(res => {
+    fetch(e.request, { cache: 'no-cache' }).then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(e.request, copy));
       return res;
-    }).catch(() => caches.match(e.request))
+    }).catch(() => caches.match(e.request, { ignoreSearch: true }))
   );
 });
 
