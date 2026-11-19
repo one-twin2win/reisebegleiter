@@ -323,13 +323,15 @@ function stopGuide() {
 /* ───────────── Auswahl der letzten Meile ───────────── */
 function chooseWalk(ev, station) {
   openSheet(`<h2>🚶 Zu Fuß zu ${esc(ev.place.name || ev.title)}</h2>
-    <div class="muted small">Wie möchtest du geführt werden?</div>
+    ${window._lm?.lm?.walk ? `<div class="muted small">${fmtDur(window._lm.lm.walk.duration)} · ${fmtKm(window._lm.lm.walk.legs[0].distance || 0)} ab ${esc(station?.name || '')}</div><div id="walkMap" class="map" style="height:200px"></div>` : ''}
+    <div class="muted small" style="margin-top:8px">Wie möchtest du geführt werden?</div>
     <div class="list" style="margin-top:12px">
       <button class="btn primary block" id="wHere">📍 Hier in der App mit GPS (einfache Anweisungen)</button>
       <a class="btn block" target="_blank" rel="noopener" href="${esc(googleWalk(ev.place))}" onclick="setTimeout(closeSheet,300)">Mit Google Maps begleiten</a>
       <a class="btn block" target="_blank" rel="noopener" href="${esc(appleWalk(ev.place))}" onclick="setTimeout(closeSheet,300)">Mit Apple Karten begleiten</a>
     </div>
     <div class="small muted" style="margin-top:10px">Tipp: Die Reise-Begleitung läuft weiter – ich melde mich, wenn du am Ziel bist.</div>`);
+  if (window._lm?.lm?.walk) segmentMap('walkMap', window._lm.lm.walk.legs, { dest: ev.place, destLabel: '🏁 ' + (ev.place.name || ev.title) });
   $('#wHere').onclick = async () => {
     closeSheet();
     const pos = await getPosOnce().catch(() => null);

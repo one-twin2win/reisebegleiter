@@ -293,7 +293,12 @@ label.bigchoice { display: block; }
 .g-step.cur { background: color-mix(in srgb, var(--accent) 18%, transparent); font-weight: 650; }
 .stopmark { background: #fff; color: #333; border: 2px solid #888; border-radius: 8px; padding: 1px 5px; font: 700 11px/1.3 -apple-system, sans-serif; white-space: nowrap; transform: translate(-50%, -50%); display: inline-block; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
 .stopmark.tgt { background: #e2001a; color: #fff; border-color: #fff; font-size: 14px; padding: 3px 8px; box-shadow: 0 0 0 4px rgba(226,0,26,.3); }
-.hero .row .btn.sm { white-space: nowrap; padding: 7px 10px; flex: 1 1 auto; }
+.hero .row .btn.sm { white-space: nowrap; padding: 8px 10px; flex: 1 1 40%; }
+.hero .row:has(> .btn.sm) { flex-wrap: wrap; }
+/* Nächster Schritt */
+.card.step { border: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+.step-t { font-size: 18px; font-weight: 750; letter-spacing: -.01em; margin: 6px 0 2px; line-height: 1.25; }
+#mapInfo { margin-bottom: 6px; }
 /* Wegpunkte in der Kopfkarte */
 .wps { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
 .wp { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; cursor: pointer; color: #fff;

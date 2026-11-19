@@ -44,7 +44,7 @@ function waypointsHtml(A, ev, now) {
   const tailDur = tail.length ? (new Date(tail[tail.length - 1].endTime) - new Date(main ? main.endTime : tail[0].startTime)) / 1000 : 0;
   const plan = tt.length ? `${tt.map(legName).join(' + ')} · ${fmtDur(tailDur)}` : tail.length ? `🚶 ${fmtDur(tailDur)} zu Fuß` : '';
   const from = main ? shortStop(main.to.name) : '';
-  rows.push(`<button class="wp" onclick="setJetztTab('lm')"><span class="wp-ico">🏁</span><span class="grow"><b>Weg zum Ziel${from ? ' ab ' + esc(from) : ''}</b><span class="wp-sub" style="display:block">${plan ? esc(plan) + ' → ' : ''}${esc(ev.place?.name || ev.title)}</span>${A.lmSummary ? `<span class="wp-sub" id="wpLast" style="display:block">Alternative: ${esc(A.lmSummary.text)}</span>` : ''}</span><span class="wp-chev">›</span></button>`);
+  rows.push(`<button class="wp" onclick="setJetztTab('lm', true)"><span class="wp-ico">🏁</span><span class="grow"><b>Weg zum Ziel${from ? ' ab ' + esc(from) : ''}</b><span class="wp-sub" style="display:block">${plan ? esc(plan) + ' → ' : ''}${esc(ev.place?.name || ev.title)}</span>${A.lmSummary ? `<span class="wp-sub" id="wpLast" style="display:block">Alternative: ${esc(A.lmSummary.text)}</span>` : ''}</span><span class="wp-chev">›</span></button>`);
   const nx = nextStageLine(ev); if (nx) rows.push(nx); // nächste Etappe der Reise (z. B. morgen zum KOM27)
   return `<div class="wps">${rows.join('')}</div>`;
 }

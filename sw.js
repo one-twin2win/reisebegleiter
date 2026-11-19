@@ -1,5 +1,5 @@
 ﻿// Service Worker: Offline-Shell + Mitteilungen
-const CACHE = 'reisebegleiter-v11';
+const CACHE = 'reisebegleiter-v13';
 const SHELL = ['./', './index.html', './app.js', './costs.js', './guide.js', './archive.js', './preplan.js', './ridefind.js', './trip.js', './followup.js', './hotel.js', './nav.js', './styles.css', './manifest.webmanifest', './icon.svg', './icon-192.png'];
 
 self.addEventListener('install', e => {

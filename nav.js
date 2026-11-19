@@ -47,6 +47,47 @@ function guardKeep() {
   closeSheet(); toast('Begleitung läuft weiter ✓'); go('jetzt');
 }
 
+/* ───────────── Begleitung beenden: immer mit Rückfrage ─────────────
+ * reason: 'manual' (Knopf), 'arrived' (GPS am Ziel), 'overdue' (Ankunft lange vorbei), 'stale' (App nach langer Zeit geöffnet) */
+function askEndCompanion(reason = 'manual') {
+  const A = S.active, ev = activeEvent(); if (!A || !ev) return;
+  if ($('#sheetBody [data-endask]') && !$('#sheet').classList.contains('hidden')) return; // Frage ist schon offen
+  const eta = itinEnd(A.itinerary);
+  const head = { manual: 'Begleitung beenden?', arrived: `📍 Du bist am Ziel`, overdue: 'Bist du angekommen?', stale: 'Ist diese Reise noch aktuell?' }[reason];
+  const text = {
+    manual: `Begleitung nach <b>${esc(ev.title)}</b> (Ankunft ${fmtT(eta)}).`,
+    arrived: `Du bist bei <b>${esc(ev.title)}</b> angekommen. Soll ich die Begleitung beenden?`,
+    overdue: `Die geplante Ankunft bei <b>${esc(ev.title)}</b> war um ${fmtT(eta)}.`,
+    stale: `Die Begleitung nach <b>${esc(ev.title)}</b> läuft seit ${fmtD(A.startedAt)}, ${fmtT(A.startedAt)} (geplante Ankunft ${fmtD(eta)}, ${fmtT(eta)}).`
+  }[reason];
+  openSheet(`<h2 data-endask>${head}</h2><p>${text}</p>
+    <div class="list">
+      <button class="btn primary block" onclick="closeSheet();stopCompanion(true)">✓ Angekommen – beenden</button>
+      <button class="btn block" onclick="closeSheet();stopCompanion(false);toast('Begleitung beendet')">■ Ohne Ankunft beenden</button>
+      <button class="btn ghost block" onclick="keepCompanion('${reason}')">${reason === 'stale' ? 'Ja, noch aktuell – weiter begleiten' : 'Weiter begleiten'}</button>
+    </div>`);
+}
+function keepCompanion(reason) {
+  const A = S.active; if (A) { A.keptAt = new Date().toISOString(); if (reason === 'arrived') A.askedEnd = true; save(); }
+  closeSheet(); toast('Begleitung läuft weiter'); refreshActive(true);
+}
+/* Beim Öffnen (oder Zurückkehren nach langer Zeit): ist die laufende Begleitung veraltet? */
+function checkStaleCompanion() {
+  const A = S.active; if (!A || document.hidden) return;
+  if (!$('#sheet').classList.contains('hidden')) return;
+  const now = Date.now(), eta = new Date(itinEnd(A.itinerary)).getTime();
+  const kept = A.keptAt ? new Date(A.keptAt).getTime() : 0;
+  const stale = (now - eta > 2 * 3600e3) || (now - new Date(A.startedAt || now).getTime() > 24 * 3600e3);
+  if (stale && now - kept > 3 * 3600e3) askEndCompanion('stale');
+}
+let hiddenSince = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenSince = Date.now(); return; }
+  if (hiddenSince && Date.now() - hiddenSince > 30 * 60e3) setTimeout(checkStaleCompanion, 1200);
+  hiddenSince = null;
+});
+setTimeout(checkStaleCompanion, 2000); // beim Öffnen der App
+
 /* ───────────── Seitenfenster „Übersicht“ ───────────── */
 function openDrawer() { renderDrawer(); $('#drawer').classList.remove('hidden'); $('#drawerBackdrop').classList.remove('hidden'); }
 function closeDrawer() { $('#drawer').classList.add('hidden'); $('#drawerBackdrop').classList.add('hidden'); }

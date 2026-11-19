@@ -40,7 +40,7 @@ function prePlanFrom(evId) {
 }
 /* Danach-Zeile während der Fahrt: nächste Etappe der Reise */
 function nextStageLine(ev) {
-  const n = S.events.filter(e => e.after === ev.id && !e.done).sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0))[0];
+  const n = S.events.filter(e => e.after === ev.id && !e.done && (!e.start || new Date(e.start).getTime() > Date.now() - 3600e3)).sort((a, b) => new Date(a.start || 0) - new Date(b.start || 0))[0];
   if (!n) return '';
   const by = n.arriveBy || n.start;
   return `<button class="wp" onclick="openEvent('${n.id}')"><span class="wp-ico">➡️</span><span class="grow"><b>Danach: ${esc(n.title)}</b><span class="wp-sub" style="display:block">${by ? `${fmtD(by)}, spätestens ${fmtT(by)}` : ''}${n.plan ? ' · ' + prePlanLine(n).replace(/^🧭 /, '') : ' · Anfahrt noch nicht geplant'}</span></span><span class="wp-chev">›</span></button>`;
