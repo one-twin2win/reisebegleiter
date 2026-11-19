@@ -294,7 +294,7 @@ const itinSchedEnd = it => { const l = it.legs[it.legs.length - 1]; return l?.sc
 function activeEvent() { return S.events.find(e => e.id === S.active?.eventId); }
 function nextEvent() {
   const now = Date.now() - 3 * 3600e3;
-  return S.events.filter(e => !e.done && (!e.start || new Date(e.start).getTime() > now)).sort((a, b) => (a.start ? new Date(a.start) : Date.now()) - (b.start ? new Date(b.start) : Date.now()))[0];
+  return S.events.filter(e => !e.done && !e.hidden && (!e.start || new Date(e.start).getTime() > now)).sort((a, b) => (a.start ? new Date(a.start) : Date.now()) - (b.start ? new Date(b.start) : Date.now()))[0];
 }
 
 /* Neuer Plan: von Ort/GPS zu Termin */
@@ -725,13 +725,9 @@ async function renderJetzt() {
     el.innerHTML = h; return;
   }
   if (!A) {
-    h += `<div class="hero"><div class="eyebrow">Nächstes Ziel</div><div class="dest">${KIND[ev?.kind]?.ico || '📍'} ${esc(ev?.title || '–')}</div>
-      <div class="sub">${esc(ev?.place?.address || ev?.place?.name || '')}</div>
-      <div class="sub" style="margin-top:6px">${ev?.start ? `${fmtD(ev.start)}, ${fmtT(ev.start)}` : 'Heute · Ankunftszeit offen'}${ev?.checkIn ? ` · Check-in ab ${esc(ev.checkIn)}` : ''}</div>
-      <div class="sub" style="margin-top:6px">${ev?.plan ? prePlanLine(ev) + ` · <a href="#" style="color:#fff" onclick="openPrePlan('${ev.id}');return false">ändern</a>` : `<a href="#" style="color:#fff" onclick="openPrePlan('${ev?.id}');return false">🧭 Anreise vorab planen</a>`}</div>
-      <div class="row wrap" style="margin-top:14px"><button class="btn primary" onclick="openStart('${ev?.id}')">▶︎ Begleitung starten</button><button class="btn" onclick="openRideSetup('${ev?.id}')">🚄 Ich sitze schon im Zug</button></div></div>`;
-    h += `<div class="card"><h3>So funktioniert's</h3><div class="small muted">1. Ziel wählen · 2. Startpunkt (GPS oder Bahnhof) oder deinen aktuellen Zug wählen · 3. Ich gleiche laufend Echtzeitdaten, GPS und Anschlüsse ab und melde mich, sobald sich etwas ändert – inkl. Weg vom Zielbahnhof zum Ziel.</div></div>`;
-    if (ev) h += `<div class="card" id="lmCard"><div class="eyebrow">Vom Bahnhof zum Ziel</div><div class="muted small" style="margin-top:6px">Wird berechnet, sobald die Reise läuft – oder jetzt <button class="btn ghost sm" onclick="previewLastMile('${ev.id}')">Vorschau ab Hauptbahnhof</button></div></div>`;
+    // Startbild ohne laufende Reise: nächstes Ziel mit allen wichtigen Daten (home.js)
+    if (!ev) { h += `<div class="empty"><div class="ico">🙈</div><h3>Alles ausgeblendet</h3><p>Ausgeblendete Ziele findest du im Tab „Plan“.</p><button class="btn primary" onclick="openAdd()">Neues Ziel</button></div>`; el.innerHTML = h; return; }
+    h += homeCard(ev);
     el.innerHTML = h; return;
   }
   const it = A.itinerary, eta = itinEnd(it), late = mins(new Date(eta) - new Date(A.plannedEta));
@@ -1048,7 +1044,7 @@ function renderPlanList(el) {
   for (const e of evs) {
     const dk = e.start ? dayKey(e.start) : 'offen';
     if (dk !== lastDay) { h += `<div class="daylabel">${e.start ? fmtD(e.start) : 'Ohne feste Zeit'}</div>`; lastDay = dk; }
-    h += `<div class="item" onclick="openEvent('${e.id}')" style="${e.done ? 'opacity:.55' : ''}"><div class="ic">${KIND[e.kind]?.ico || '📍'}</div><div class="grow"><b class="ellipsis" style="display:block">${esc(e.title)}</b><div class="small muted ellipsis">${esc(e.place?.address || e.place?.name || '')}</div>${e.plan ? `<div class="small ellipsis" style="color:var(--accent)">${prePlanLine(e)}</div>` : ''}</div><div class="when">${e.start ? fmtT(e.start) : '—'}${S.active?.eventId === e.id ? '<div class="small" style="color:var(--ok)">● live</div>' : e.done ? `<div class="small" style="color:var(--accent)" onclick="event.stopPropagation();askArchive('${e.id}')">archivieren</div>` : ''}</div></div>`;
+    h += `<div class="item" onclick="openEvent('${e.id}')" style="${e.done || e.hidden ? 'opacity:.55' : ''}"><div class="ic">${KIND[e.kind]?.ico || '📍'}</div><div class="grow"><b class="ellipsis" style="display:block">${esc(e.title)}</b><div class="small muted ellipsis">${esc(e.place?.address || e.place?.name || '')}</div>${e.plan ? `<div class="small ellipsis" style="color:var(--accent)">${prePlanLine(e)}</div>` : ''}</div><div class="when">${e.start ? fmtT(e.start) : '—'}${S.active?.eventId === e.id ? '<div class="small" style="color:var(--ok)">● live</div>' : e.done ? `<div class="small" style="color:var(--accent)" onclick="event.stopPropagation();askArchive('${e.id}')">archivieren</div>` : ''}</div></div>`;
   }
   el.insertAdjacentHTML('beforeend', h);
 }
@@ -1066,6 +1062,7 @@ function openEvent(id) {
       <button class="btn block" onclick="openAdd('${e.id}')">✏️ Bearbeiten</button>
       <button class="btn block" onclick="exportICS('${e.id}')">📆 In Kalender exportieren (.ics)</button>
       ${e.kind !== 'hotel' ? `<button class="btn block" onclick="closeSheet();openHotelStep('${e.id}')">🏨 Hotel suchen</button>` : e.booking && e.booking.status !== 'gebucht' ? `<button class="btn block" onclick="S.pendingBooking={evId:'${e.id}',via:'${e.booking.via === 'vorgemerkt' ? 'Booking.com' : e.booking.via}',at:0};closeSheet();checkBookingReturn()">✅ Als gebucht markieren</button>` : ''}
+      ${e.hidden ? `<button class="btn block" onclick="unhideEvent('${e.id}')">👁 Wieder auf der Startseite zeigen</button>` : ''}
       <button class="btn block" onclick="window._nextAfter='${e.id}';closeSheet();openAdd()">➕ Nächste Etappe ab hier planen</button>
       <button class="btn block" onclick="askArchive('${e.id}')">🗄️ Reise archivieren</button>
       <button class="btn block danger" onclick="delEvent('${e.id}')">Löschen</button>
