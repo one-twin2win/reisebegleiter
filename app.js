@@ -305,7 +305,9 @@ async function planTo(ev, origin, when, arriveBy) {
   return its.sort((a, b) => new Date(itinEnd(a)) - new Date(itinEnd(b)));
 }
 
-function startCompanion(ev, itinerary, ride = null) {
+function startCompanion(ev, itinerary, ride = null, confirmed = false) {
+  // Eine laufende Begleitung wird nie stillschweigend ersetzt – nur nach ausdrücklicher Bestätigung
+  if (S.active && !confirmed) return guardCompanion(ev, itinerary, ride);
   S.active = { eventId: ev.id, itinerary, ride, plannedEta: itinEnd(itinerary), lastEta: itinEnd(itinerary), notified: {}, startedAt: new Date().toISOString(), lastRefresh: null };
   save();
   feed('Begleitung gestartet', `Ziel: ${ev.title}\nGeplante Ankunft ${fmtT(itinEnd(itinerary))}. Ich melde mich bei Verspätungen, Gleiswechseln, gefährdeten Anschlüssen und vor jedem Umstieg.`, 'ok');
@@ -1479,8 +1481,30 @@ function backup() {
 }
 
 /* ───────────── Sheet-Helfer ───────────── */
-function openSheet(html) { $('#sheetBody').innerHTML = html; $('#sheet').classList.remove('hidden'); $('#sheetBackdrop').classList.remove('hidden'); $('#sheet').scrollTop = 0; }
-function closeSheet() { $('#sheet').classList.add('hidden'); $('#sheetBackdrop').classList.add('hidden'); }
+/* Fenster (Sheets) mit Verlauf: „‹ Zurück“ stellt den vorherigen Stand wieder her (inkl. Eingaben),
+ * „✕“ bricht ab. Die vorherigen Inhalte werden als DOM-Knoten aufgehoben – Eingaben & Knöpfe bleiben funktionsfähig. */
+const SH = { stack: [], last: null, closing: null };
+function takeSheetNodes() { const b = $('#sheetBody'), f = document.createDocumentFragment(); while (b.firstChild) f.appendChild(b.firstChild); return { f, top: $('#sheet').scrollTop }; }
+function openSheet(html) {
+  const sheet = $('#sheet'), open = !sheet.classList.contains('hidden');
+  if (open && $('#sheetBody').childNodes.length) SH.stack.push(takeSheetNodes());
+  else if (SH.closing && SH.last) { clearTimeout(SH.closing); SH.closing = null; SH.stack.push(SH.last); } // closeSheet();openSheet() = Weiter
+  SH.last = null;
+  if (SH.stack.length > 12) SH.stack.shift();
+  $('#sheetBody').innerHTML = html; sheet.classList.remove('hidden'); $('#sheetBackdrop').classList.remove('hidden'); sheet.scrollTop = 0; sheet.style.transform = '';
+  $('#sheetBack').classList.toggle('hidden', !SH.stack.length);
+}
+function closeSheet() {
+  const sheet = $('#sheet'); if (sheet.classList.contains('hidden')) return;
+  SH.last = takeSheetNodes();
+  sheet.classList.add('hidden'); $('#sheetBackdrop').classList.add('hidden'); sheet.style.transform = '';
+  clearTimeout(SH.closing); SH.closing = setTimeout(() => { SH.stack = []; SH.last = null; SH.closing = null; }, 400);
+}
+function backSheet() {
+  const prev = SH.stack.pop(); if (!prev) return closeSheet();
+  const b = $('#sheetBody'); b.innerHTML = ''; b.appendChild(prev.f); $('#sheet').scrollTop = prev.top || 0;
+  $('#sheetBack').classList.toggle('hidden', !SH.stack.length);
+}
 function segBind(sel, fn) { $$(sel + ' button').forEach(b => b.onclick = () => { if (b.disabled) return; $$(sel + ' button').forEach(x => x.classList.toggle('on', x === b)); fn(b); }); }
 
 /* ───────────── Start ───────────── */

@@ -55,6 +55,14 @@
   Buchungsnr. & Preis → Reisekosten; Hotel sofort als Etappe gespeichert, Weg Hotel → Termin automatisch geplant
 - Grenzen: Booking/Hotels haben keine offene Preis-Schnittstelle → Preise kommen von den geöffneten Seiten
 
+## Stufe 1h (erledigt)
+- Jedes Fenster: „‹ Zurück“ (vorheriger Stand inkl. Eingaben) und „Abbrechen“; nach unten wischen schließt
+- Aufgeklappte Listen (z. B. Zwischenhalte) per Wischen nach unten zuklappen
+- Laufende Begleitung wird nie durch eine neue Planung ersetzt – nur nach doppelter Bestätigung
+- Seitenfenster „Übersicht“ (☰ oben links): Planung · Verlauf · Orte (Hotels, Haltestellen, gemerkte Orte)
+  → antippen: „Dorthin – Weg planen“, „Nächste Planung hier starten“, Haltestelle auf der Karte
+- Rückkehr aus Google Maps: Planung wird wiederhergestellt, kopierte Adresse erkannt (Einfügen/Teilen)
+
 ## Ideen aus dem Test (noch offen)
 - Wagenreihung/Gleisabschnitt automatisch (sobald eine offene Datenquelle verfügbar ist)
 - Nachts automatisch Taxi/Uber empfehlen, wenn ÖPNV-Rest > 2× so lang

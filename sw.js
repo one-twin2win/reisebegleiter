@@ -1,6 +1,6 @@
 ﻿// Service Worker: Offline-Shell + Mitteilungen
-const CACHE = 'reisebegleiter-v9';
-const SHELL = ['./', './index.html', './app.js', './costs.js', './guide.js', './archive.js', './preplan.js', './ridefind.js', './trip.js', './followup.js', './hotel.js', './styles.css', './manifest.webmanifest', './icon.svg', './icon-192.png'];
+const CACHE = 'reisebegleiter-v10';
+const SHELL = ['./', './index.html', './app.js', './costs.js', './guide.js', './archive.js', './preplan.js', './ridefind.js', './trip.js', './followup.js', './hotel.js', './nav.js', './styles.css', './manifest.webmanifest', './icon.svg', './icon-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
